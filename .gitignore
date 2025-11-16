@@ -1,0 +1,35 @@
+# Environment files with sensitive data
+aws.env
+*.env
+.env.local
+.env.*.local
+
+# Certificates and keys
+*.pem
+*.key
+*.crt
+cert.*
+
+# Docker
+.dockerignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+*.o
+*.so
+__pycache__/
+*.pyc

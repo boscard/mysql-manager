@@ -1,0 +1,21 @@
+services:
+  db:
+    image: mysql
+    restart: always
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: somePassword
+      MYSQL_DATABASE: manager
+  manager:
+    build: .
+    env_file: "aws.env"
+    environment:
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: somePassword
+      DB_NAME: test1
+      DB_MANAGER: manager
+      S3_BUCKET: Backups/test
+      DB_BACKUP_INTERVAL: 10s
