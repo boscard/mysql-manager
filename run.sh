@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+# Temporary directory for backups and temporary files (default: /tmp)
+TMP_DIR="${TMP_DIR:-/tmp}"
+
 # Function to execute MySQL queries via mysql
 run_mysql_query() {
     local query="$1"
@@ -9,6 +12,7 @@ run_mysql_query() {
 }
 
 # Function to create a database dump with CREATE DATABASE statement
+# Always compresses the output with gzip
 create_database_dump() {
     local output_file="$1"
     mysqldump -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" --password="${DB_PASSWORD}" \
@@ -17,13 +21,14 @@ create_database_dump() {
         --routines \
         --triggers \
         --ssl-verify-server-cert=false \
-        > "${output_file}"
+        | gzip > "${output_file}"
 }
 
 # Function to restore a database dump
+# Always decompresses .gz files on the fly
 restore_database_dump() {
     local dump_file="$1"
-    mysql -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" --password="${DB_PASSWORD}" --ssl-verify-server-cert=false < "${dump_file}"
+    gunzip -c "${dump_file}" | mysql -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" --password="${DB_PASSWORD}" --ssl-verify-server-cert=false
 }
 
 # Function to execute s3cmd commands with common parameters
@@ -163,7 +168,7 @@ restore_database() {
         
         # Construct path to latest.txt
         latest_txt_path="${S3_BUCKET}/latest.txt"
-        latest_txt_file="/tmp/latest.txt"
+        latest_txt_file="${TMP_DIR}/latest.txt"
         
         # Download latest.txt to get the backup filename
         echo "Downloading latest.txt from s3://${latest_txt_path}..."
@@ -178,21 +183,21 @@ restore_database() {
                     
                     # Construct full path to backup file
                     backup_s3_path="${S3_BUCKET}/${backup_filename}"
-                    backup_file="/tmp/db_backup.sql"
+                    backup_file_compressed="${TMP_DIR}/db_backup.sql.gz"
                     
                     echo "Downloading backup from s3://${backup_s3_path}..."
-                    if run_s3cmd get "s3://${backup_s3_path}" "${backup_file}"; then
+                    if run_s3cmd get "s3://${backup_s3_path}" "${backup_file_compressed}"; then
                         echo "Backup downloaded successfully. Restoring database..."
-                        if restore_database_dump "${backup_file}"; then
+                        if restore_database_dump "${backup_file_compressed}"; then
                             echo "Database restored successfully from backup."
                             # Clean up temporary backup file
-                            rm -f "${backup_file}"
+                            rm -f "${backup_file_compressed}"
                             
                             # Update lastBackupTime with current timestamp
                             initialize_last_backup_time "now"
                         else
                             echo "Failed to restore database from backup." >&2
-                            rm -f "${backup_file}"
+                            rm -f "${backup_file_compressed}"
                             exit 1
                         fi
                     else
@@ -236,16 +241,18 @@ backup_database() {
         if [ $ELAPSED_SECONDS -gt $BACKUP_INTERVAL_SECONDS ]; then
             echo "Backup interval exceeded. Creating new backup..."
             
-            # Create backup
-            backup_filename="db_backup_$(date +%Y%m%d_%H%M%S).sql"
-            backup_file="/tmp/${backup_filename}"
-            if create_database_dump "${backup_file}"; then
-                echo "Backup created successfully. Uploading to S3..."
+        # Create backup
+        backup_timestamp=$(date +%Y%m%d_%H%M%S)
+        backup_filename="db_backup_${backup_timestamp}.sql.gz"
+        backup_file="${TMP_DIR}/${backup_filename}"
+        echo "Creating backup..."
+        if create_database_dump "${backup_file}"; then
+            echo "Backup created successfully. Uploading to S3..."
                 
                 # Construct S3 paths
                 backup_s3_path="${S3_BUCKET}/${backup_filename}"
                 latest_txt_path="${S3_BUCKET}/latest.txt"
-                latest_txt_file="/tmp/latest.txt"
+                latest_txt_file="${TMP_DIR}/latest.txt"
                 
                 # Upload backup to S3
                 if run_s3cmd put "${backup_file}" "s3://${backup_s3_path}"; then
@@ -267,12 +274,12 @@ backup_database() {
                 else
                     echo "Failed to upload backup to S3." >&2
                 fi
-                
-                # Clean up temporary backup file
-                rm -f "${backup_file}"
             else
                 echo "Failed to create backup." >&2
             fi
+            
+            # Clean up temporary backup file
+            rm -f "${backup_file}"
         else
             echo "Backup not needed yet. Next backup in $((BACKUP_INTERVAL_SECONDS - ELAPSED_SECONDS)) seconds."
         fi
