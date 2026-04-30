@@ -19,3 +19,4 @@ services:
       DB_MANAGER: manager
       S3_BUCKET: Backups/test
       DB_BACKUP_INTERVAL: 10s
+      DB_BACKUP_RETENTION: 7d
