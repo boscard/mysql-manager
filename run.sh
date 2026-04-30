@@ -271,6 +271,9 @@ backup_database() {
                     run_mysql_query "DELETE FROM ${DB_MANAGER}.lastBackupTime"
                     run_mysql_query "INSERT INTO ${DB_MANAGER}.lastBackupTime (timestamp) VALUES (NOW())"
                     echo "lastBackupTime updated."
+                    
+                    # Clean up old backups from S3
+                    cleanup_old_backups
                 else
                     echo "Failed to upload backup to S3." >&2
                 fi
@@ -287,6 +290,50 @@ backup_database() {
         echo "No backup timestamp found in lastBackupTime table. Trying to restore database from backup..."
         restore_database
     fi
+}
+
+# Function to clean up old backups from S3 bucket based on retention policy
+cleanup_old_backups() {
+    local retention="${DB_BACKUP_RETENTION:-7d}"
+    local cutoff_ts
+    cutoff_ts=$(generate_timestamp_minus_duration "$retention")
+
+    echo "Cleaning up backups older than ${retention} (cutoff timestamp: ${cutoff_ts})..."
+
+    # Fetch latest.txt so we never delete the backup it points to
+    local latest_backup=""
+    local latest_txt_file="${TMP_DIR}/latest_cleanup.txt"
+    local latest_txt_path="${S3_BUCKET}/latest.txt"
+    if run_s3cmd get "s3://${latest_txt_path}" "${latest_txt_file}" 2>/dev/null; then
+        latest_backup=$(cat "${latest_txt_file}")
+        rm -f "${latest_txt_file}"
+    fi
+
+    run_s3cmd ls "s3://${S3_BUCKET}/" | awk '{print $NF}' | while read -r object_url; do
+        local filename
+        filename=$(basename "$object_url")
+
+        if [[ ! "$filename" =~ ^db_backup_([0-9]{8})_([0-9]{6})\.sql\.gz$ ]]; then
+            continue
+        fi
+
+        if [[ "$filename" == "$latest_backup" ]]; then
+            continue
+        fi
+
+        local date_part="${BASH_REMATCH[1]}"
+        local time_part="${BASH_REMATCH[2]}"
+        local formatted_ts="${date_part:0:4}-${date_part:4:2}-${date_part:6:2} ${time_part:0:2}:${time_part:2:2}:${time_part:4:2}"
+        local file_ts
+        file_ts=$(date -d "$formatted_ts" +%s 2>/dev/null || echo "0")
+
+        if [[ "$file_ts" -lt "$cutoff_ts" ]]; then
+            echo "Deleting old backup: ${filename} (timestamp: ${file_ts})"
+            run_s3cmd del "s3://${S3_BUCKET}/${filename}" || echo "Warning: Failed to delete ${filename}" >&2
+        fi
+    done
+
+    echo "Bucket cleanup complete."
 }
 
 # Wait for services
